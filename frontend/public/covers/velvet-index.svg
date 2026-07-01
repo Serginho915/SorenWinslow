@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750">
+  <rect width="1200" height="750" fill="#24352c"/>
+  <rect x="92" y="76" width="1016" height="598" fill="#fff8ec" stroke="#1b1612" stroke-width="10"/>
+  <rect x="156" y="138" width="330" height="476" fill="#7a2d1e"/>
+  <rect x="518" y="138" width="526" height="72" fill="#1b1612"/>
+  <rect x="518" y="250" width="420" height="24" fill="#cc4934"/>
+  <rect x="518" y="310" width="500" height="24" fill="#d8c9b7"/>
+  <rect x="518" y="370" width="360" height="24" fill="#d8c9b7"/>
+  <circle cx="320" cy="376" r="120" fill="#f6c753"/>
+  <path d="M254 376h132M320 310v132" stroke="#1b1612" stroke-width="16"/>
+  <text x="518" y="575" fill="#1b1612" font-family="Georgia, serif" font-size="92" font-weight="700">GOLDEN PAGES</text>
+</svg>
