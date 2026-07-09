@@ -1,41 +1,53 @@
-import cookieParser from "cookie-parser";
-import cors from "cors";
-import express from "express";
-import { adminRouter } from "./routes/admin.js";
-import { aiRouter } from "./routes/ai.js";
-import { authRouter } from "./routes/auth.js";
-import { healthIndexRouter } from "./routes/healthIndex.js";
-import { postsRouter } from "./routes/posts.js";
-import { subscribersRouter } from "./routes/subscribers.js";
-import { errorHandler } from "./middleware/errorHandler.js";
-import { initDb } from "./services/db.js";
-import { apiLimiter } from "./services/rateLimit.js";
-import { startGenerationScheduler } from "./services/generationScheduler.js";
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import path from 'path';
+import { ensureSchema } from './services/db';
+import { migrateLegacyDataIfNeeded } from './services/legacyDataMigration';
+import { errorHandler } from './middleware/errorHandler';
+import { postsRouter } from './routes/posts';
+import { subscribersRouter } from './routes/subscribers';
+import { authRouter } from './routes/auth';
+import { adminRouter } from './routes/admin';
+import { aiRouter } from './routes/ai';
+import { healthIndexRouter } from './routes/healthIndex';
+import { startGenerationScheduler } from './services/generationScheduler';
 
 const app = express();
-const port = Number(process.env.PORT ?? 4000);
+const port = Number(process.env.PORT || 4000);
+const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
 
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
-    credentials: true
-  })
+    origin: corsOrigin,
+    credentials: true,
+  }),
 );
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
-app.use(apiLimiter);
+app.use('/uploads', express.static(process.env.UPLOAD_DIR || path.resolve(process.cwd(), 'uploads')));
 
-app.use("/api/auth", authRouter);
-app.use("/api/posts", postsRouter);
-app.use("/api/admin", adminRouter);
-app.use("/api/ai", aiRouter);
-app.use("/api/subscribers", subscribersRouter);
-app.use("/api/health", healthIndexRouter);
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'sorenwinslow-backend', time: new Date().toISOString() });
+});
+app.use('/api/posts', postsRouter);
+app.use('/api/subscribe', subscribersRouter);
+app.use('/api/auth', authRouter);
+app.use('/api/admin', adminRouter);
+app.use('/api/ai', aiRouter);
+app.use('/api/health-index', healthIndexRouter);
 app.use(errorHandler);
 
-await initDb();
-startGenerationScheduler();
+async function main() {
+  await ensureSchema();
+  await migrateLegacyDataIfNeeded();
+  startGenerationScheduler();
+  app.listen(port, () => console.log(`API listening on http://localhost:${port}`));
+}
 
-app.listen(port, () => {
-  console.log(`API listening on ${port}`);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
 });

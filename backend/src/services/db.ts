@@ -1,83 +1,117 @@
-import pg, { type QueryResultRow } from "pg";
-import { defaultMasterPrompt, samplePosts } from "../data/samplePosts.js";
+import { Pool, type QueryResultRow } from 'pg';
+import { samplePosts } from '../data/samplePosts';
+import { sanitizeArticleHtml } from './htmlSanitizer';
 
-const { Pool } = pg;
+const fallbackDatabaseUrl = 'postgres://sorenwinslow:sorenwinslow@localhost:5432/sorenwinslow';
+
+function requireProductionEnv() {
+  if (process.env.NODE_ENV !== 'production') return;
+  const required = ['DATABASE_URL', 'JWT_SECRET', 'REFRESH_TOKEN_SECRET'] as const;
+  for (const key of required) {
+    if (!process.env[key]) throw new Error(`${key} is required in production`);
+  }
+  if (process.env.JWT_SECRET === process.env.REFRESH_TOKEN_SECRET) {
+    throw new Error('JWT_SECRET and REFRESH_TOKEN_SECRET must be different');
+  }
+  if ((process.env.JWT_SECRET || '').length < 32 || (process.env.REFRESH_TOKEN_SECRET || '').length < 32) {
+    throw new Error('JWT secrets must be at least 32 characters');
+  }
+  const origin = process.env.CORS_ORIGIN || '';
+  const siteUrl = process.env.SITE_URL || '';
+  if (origin.includes('localhost') || siteUrl.includes('localhost')) {
+    throw new Error('Production CORS_ORIGIN and SITE_URL must not point to localhost');
+  }
+}
+
+requireProductionEnv();
 
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
+  connectionString: process.env.DATABASE_URL || fallbackDatabaseUrl,
 });
 
 export async function query<T extends QueryResultRow = QueryResultRow>(text: string, params: unknown[] = []) {
   return pool.query<T>(text, params);
 }
 
-export async function initDb() {
-  await query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
+export async function ensureSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   await query(`
     CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'superadmin',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      email text UNIQUE NOT NULL,
+      password_hash text NOT NULL,
+      role text NOT NULL DEFAULT 'admin',
+      created_at timestamptz NOT NULL DEFAULT now()
     );
+
     CREATE TABLE IF NOT EXISTS refresh_tokens (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token_hash TEXT NOT NULL,
-      csrf_token TEXT NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      revoked_at TIMESTAMPTZ
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash text UNIQUE NOT NULL,
+      csrf_token text NOT NULL,
+      expires_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
     );
+
     CREATE TABLE IF NOT EXISTS generated_posts (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      title TEXT NOT NULL,
-      slug TEXT UNIQUE NOT NULL,
-      excerpt TEXT NOT NULL,
-      tags TEXT[] NOT NULL DEFAULT '{}',
-      seo_title TEXT NOT NULL,
-      seo_description TEXT NOT NULL,
-      content_html TEXT NOT NULL,
-      published_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      slug text UNIQUE NOT NULL,
+      title text NOT NULL,
+      excerpt text NOT NULL,
+      content_html text NOT NULL,
+      cover_image text NOT NULL DEFAULT '/covers/velvet-index.svg',
+      status text NOT NULL DEFAULT 'published',
+      author text NOT NULL DEFAULT 'Editorial team',
+      tags text[] NOT NULL DEFAULT '{}',
+      seo_title text,
+      seo_description text,
+      source text NOT NULL DEFAULT 'admin',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
     );
-    CREATE TABLE IF NOT EXISTS subscribers (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      email TEXT UNIQUE NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
+
     CREATE TABLE IF NOT EXISTS admin_settings (
-      key TEXT PRIMARY KEY,
-      value JSONB NOT NULL
+      key text PRIMARY KEY,
+      value jsonb NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
     );
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID,
-      action TEXT NOT NULL,
-      meta JSONB NOT NULL DEFAULT '{}',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      actor_id uuid,
+      actor_email text,
+      event_type text NOT NULL,
+      metadata jsonb NOT NULL DEFAULT '{}',
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS subscribers (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      email text UNIQUE NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
     );
   `);
 
-  const postsCount = await query<{ count: string }>("SELECT count(*) FROM generated_posts");
-  if (Number(postsCount.rows[0].count) === 0) {
+  await query(`ALTER TABLE generated_posts ADD COLUMN IF NOT EXISTS cover_image text NOT NULL DEFAULT '/covers/velvet-index.svg'`);
+
+  const count = await query<{ count: string }>('SELECT count(*) FROM generated_posts');
+  if (Number(count.rows[0]?.count || 0) === 0) {
     for (const post of samplePosts) {
       await query(
-        `INSERT INTO generated_posts (title, slug, excerpt, tags, seo_title, seo_description, content_html)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (slug) DO NOTHING`,
-        [post.title, post.slug, post.excerpt, post.tags, post.seoTitle, post.seoDescription, post.contentHtml]
+        `INSERT INTO generated_posts (slug, title, excerpt, content_html, cover_image, tags, seo_title, seo_description, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'legacy')
+         ON CONFLICT (slug) DO NOTHING`,
+        [
+          post.slug,
+          post.title,
+          post.excerpt,
+          sanitizeArticleHtml(post.contentHtml),
+          post.coverImage || '/covers/velvet-index.svg',
+          post.tags || [],
+          post.seoTitle || null,
+          post.seoDescription || null,
+        ],
       );
     }
   }
-
-  await query(
-    `INSERT INTO admin_settings (key, value) VALUES
-      ('masterPrompt', $1),
-      ('generationEnabled', 'false'),
-      ('generationFrequencyCount', '1'),
-      ('generationFrequencyPeriod', '"day"'),
-      ('generationTimes', '["09:00"]')
-    ON CONFLICT (key) DO NOTHING`,
-    [JSON.stringify(defaultMasterPrompt)]
-  );
 }

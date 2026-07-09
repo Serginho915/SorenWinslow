@@ -1,5 +1,8 @@
-import { query } from "./db.js";
+import { query } from './db';
 
-export async function auditLog(userId: string | undefined, action: string, meta: Record<string, unknown> = {}) {
-  await query("INSERT INTO audit_logs (user_id, action, meta) VALUES ($1,$2,$3)", [userId ?? null, action, meta]);
+export async function auditLog(eventType: string, actor?: { id?: string; email?: string } | null, metadata: Record<string, unknown> = {}) {
+  await query(
+    'INSERT INTO audit_events (actor_id, actor_email, event_type, metadata) VALUES ($1, $2, $3, $4)',
+    [actor?.id || null, actor?.email || null, eventType, JSON.stringify(metadata)],
+  );
 }

@@ -1,69 +1,77 @@
-import bcrypt from "bcrypt";
-import crypto from "crypto";
-import jwt, { type SignOptions } from "jsonwebtoken";
-import type { Response } from "express";
-import type { User } from "../types.js";
-import { query } from "./db.js";
-import { findUserByEmail, findUserById } from "./userStore.js";
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { query } from './db';
+import { findUserByEmail, findUserById } from './userStore';
+import type { AuthedRequestUser, User } from '../types';
 
-const refreshCookieName = "refreshToken";
+const accessTtl = '15m';
+const refreshDays = 30;
 
-function requiredEnv(name: string) {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
+function jwtSecret() {
+  return process.env.JWT_SECRET || 'dev-jwt-secret-change-me-please-32chars';
 }
 
-const hashToken = (token: string) =>
-  crypto.createHmac("sha256", requiredEnv("REFRESH_TOKEN_SECRET")).update(token).digest("hex");
+function refreshSecret() {
+  return process.env.REFRESH_TOKEN_SECRET || 'dev-refresh-secret-change-me-please-32';
+}
 
-export function signAccessToken(user: User) {
-  const options: SignOptions = { expiresIn: (process.env.ACCESS_TOKEN_TTL ?? "15m") as SignOptions["expiresIn"] };
-  return jwt.sign({ sub: user.id, email: user.email, role: user.role }, requiredEnv("JWT_SECRET"), options);
+export function hashToken(token: string) {
+  return crypto.createHmac('sha256', refreshSecret()).update(token).digest('hex');
+}
+
+export function signAccessToken(user: User | AuthedRequestUser) {
+  return jwt.sign({ sub: user.id, email: user.email, role: user.role }, jwtSecret(), { expiresIn: accessTtl });
+}
+
+export function verifyAccessToken(token: string): AuthedRequestUser {
+  const payload = jwt.verify(token, jwtSecret()) as jwt.JwtPayload;
+  return { id: String(payload.sub), email: String(payload.email), role: 'admin' };
 }
 
 export async function login(email: string, password: string) {
   const user = await findUserByEmail(email);
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) return null;
-  return user;
-}
-
-export async function createRefreshSession(res: Response, user: User) {
-  const token = crypto.randomBytes(48).toString("base64url");
-  const csrfToken = crypto.randomBytes(24).toString("base64url");
-  const days = Number(process.env.REFRESH_TOKEN_DAYS ?? 30);
+  const accessToken = signAccessToken(user);
+  const refreshToken = crypto.randomBytes(48).toString('base64url');
+  const csrfToken = crypto.randomBytes(24).toString('base64url');
   await query(
-    "INSERT INTO refresh_tokens (user_id, token_hash, csrf_token, expires_at) VALUES ($1,$2,$3,now()+($4 || ' days')::interval)",
-    [user.id, hashToken(token), csrfToken, days]
+    `INSERT INTO refresh_tokens (user_id, token_hash, csrf_token, expires_at)
+     VALUES ($1, $2, $3, now() + ($4 || ' days')::interval)`,
+    [user.id, hashToken(refreshToken), csrfToken, refreshDays],
   );
-  res.cookie(refreshCookieName, token, {
-    httpOnly: true,
-    secure: process.env.COOKIE_SECURE === "true",
-    sameSite: (process.env.COOKIE_SAME_SITE as "lax" | "strict" | "none") ?? "lax",
-    maxAge: days * 24 * 60 * 60 * 1000,
-    path: "/api/auth"
-  });
-  return { accessToken: signAccessToken(user), csrfToken };
+  return { user: { id: user.id, email: user.email, role: user.role }, accessToken, refreshToken, csrfToken };
 }
 
-export async function refreshSession(token: string | undefined, csrfToken: string | undefined) {
-  if (!token || !csrfToken) return null;
+export async function refreshSession(refreshToken: string, csrfToken: string | undefined) {
+  if (!refreshToken || !csrfToken) return null;
   const result = await query<{ user_id: string; csrf_token: string }>(
-    "SELECT * FROM refresh_tokens WHERE token_hash=$1 AND csrf_token=$2 AND revoked_at IS NULL AND expires_at > now()",
-    [hashToken(token), csrfToken]
+    `SELECT rt.*, u.email, u.role
+     FROM refresh_tokens rt
+     JOIN users u ON u.id = rt.user_id
+     WHERE rt.token_hash = $1 AND rt.expires_at > now()`,
+    [hashToken(refreshToken)],
   );
-  const session = result.rows[0];
-  if (!session) return null;
-  const user = await findUserById(session.user_id);
+  const row = result.rows[0];
+  if (!row || row.csrf_token !== csrfToken) return null;
+  const user = await findUserById(row.user_id);
   if (!user) return null;
-  return { user, accessToken: signAccessToken(user), csrfToken: session.csrf_token };
+  return { accessToken: signAccessToken(user), user: { id: user.id, email: user.email, role: user.role } };
 }
 
-export async function revokeRefreshToken(token: string | undefined) {
-  if (!token) return;
-  await query("UPDATE refresh_tokens SET revoked_at=now() WHERE token_hash=$1", [hashToken(token)]);
+export async function validateRefreshCsrf(refreshToken: string | undefined, csrfToken: string | undefined) {
+  if (!refreshToken || !csrfToken) return false;
+  const result = await query<{ csrf_token: string }>(
+    `SELECT csrf_token
+     FROM refresh_tokens
+     WHERE token_hash = $1 AND expires_at > now()
+     LIMIT 1`,
+    [hashToken(refreshToken)],
+  );
+  return result.rows[0]?.csrf_token === csrfToken;
 }
 
-export function clearRefreshCookie(res: Response) {
-  res.clearCookie(refreshCookieName, { path: "/api/auth" });
+export async function logout(refreshToken: string) {
+  if (!refreshToken) return;
+  await query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hashToken(refreshToken)]);
 }

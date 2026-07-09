@@ -24,7 +24,16 @@ function render(values, order) {
   return `${keys.map((key) => `${key}=${values.get(key) ?? ""}`).join("\n")}\n`;
 }
 
-function ensureEnv({ file, example, defaults = {}, generated = {} }) {
+function isPlaceholder(value) {
+  return !value || /change-me|replace-with|your-|sk-or-v1-xxx/i.test(value);
+}
+
+function readEnv(file) {
+  const target = path.join(root, file);
+  return fs.existsSync(target) ? parseEnv(fs.readFileSync(target, "utf8")) : new Map();
+}
+
+function ensureEnv({ file, example, defaults = {}, generated = {}, inherited = {} }) {
   const target = path.join(root, file);
   const source = path.join(root, example);
   const initial = fs.existsSync(target)
@@ -44,8 +53,15 @@ function ensureEnv({ file, example, defaults = {}, generated = {} }) {
 
   for (const [key, makeValue] of Object.entries(generated)) {
     const current = values.get(key);
-    if (!current || current.includes("replace-with") || current.includes("ChangeMe")) {
+    if (isPlaceholder(current)) {
       values.set(key, makeValue());
+      order.push(key);
+    }
+  }
+
+  for (const [key, value] of Object.entries(inherited)) {
+    if (isPlaceholder(values.get(key)) && !isPlaceholder(value)) {
+      values.set(key, value);
       order.push(key);
     }
   }
@@ -59,10 +75,6 @@ ensureEnv({
   file: ".env",
   example: ".env.example",
   defaults: {
-    POSTGRES_DB: "sorenwinslow",
-    POSTGRES_USER: "soren",
-    POSTGRES_PASSWORD: "localpassword",
-    REDIS_PASSWORD: "localredis",
     LOCAL_SUPERADMIN_EMAIL: "admin@sorenwinslow.local",
     LOCAL_SUPERADMIN_PASSWORD: "MySecretPassword123!"
   }
@@ -72,31 +84,36 @@ ensureEnv({
   file: "frontend/.env",
   example: "frontend/.env.example",
   defaults: {
-    VITE_API_URL: "http://localhost:4000/api"
+    VITE_API_URL: "http://localhost:4000",
+    VITE_GA_MEASUREMENT_ID: ""
   }
 });
+
+const rootEnv = readEnv(".env");
 
 ensureEnv({
   file: "backend/.env",
   example: "backend/.env.example",
   defaults: {
     PORT: "4000",
-    DATABASE_URL: "postgres://soren:localpassword@postgres:5432/sorenwinslow",
-    REDIS_URL: "redis://:localredis@redis:6379",
-    CORS_ORIGIN: "http://localhost:5173",
-    ACCESS_TOKEN_TTL: "15m",
-    REFRESH_TOKEN_DAYS: "30",
-    COOKIE_SECURE: "false",
-    COOKIE_SAME_SITE: "lax",
-    ADMIN_EMAIL: "admin@sorenwinslow.local",
-    ADMIN_PASSWORD: "MySecretPassword123!",
-    OPENROUTER_MODEL: "meta-llama/llama-3.1-8b-instruct"
+    CORS_ORIGIN: "http://localhost:3000",
+    DATABASE_URL: "postgres://sorenwinslow:sorenwinslow@localhost:5432/sorenwinslow",
+    OPENROUTER_MODEL: "meta-llama/llama-3.1-8b-instruct",
+    OPENROUTER_SITE_URL: "http://localhost:3000",
+    OPENROUTER_TIMEOUT_MS: "90000",
+    OPENROUTER_MAX_INPUT_CHARS: "16000",
+    OPENROUTER_MAX_OUTPUT_TOKENS: "9000",
+    OPENROUTER_TEMPERATURE: "0.7",
+    SITE_URL: "http://localhost:3000"
   },
   generated: {
     JWT_SECRET: secret,
     REFRESH_TOKEN_SECRET: secret
+  },
+  inherited: {
+    OPENROUTER_API_KEY: rootEnv.get("OPENROUTER_API_KEY")
   }
 });
 
 console.log("");
-console.log("Dev env is ready. Add backend/.env OPENROUTER_API_KEY for real AI generation.");
+console.log("Dev env is ready. Add root .env OPENROUTER_API_KEY once for real AI generation.");

@@ -1,47 +1,98 @@
-import type { Post } from "../types.js";
-import { query } from "./db.js";
+import slugify from 'slugify';
+import { query } from './db';
+import { sanitizeArticleHtml } from './htmlSanitizer';
+import type { Post, PostInput } from '../types';
 
-const mapPost = (row: any): Post => ({
-  id: row.id,
-  title: row.title,
-  slug: row.slug,
-  excerpt: row.excerpt,
-  tags: row.tags ?? [],
-  seoTitle: row.seo_title,
-  seoDescription: row.seo_description,
-  contentHtml: row.content_html,
-  publishedAt: row.published_at,
-  updatedAt: row.updated_at
-});
+function mapPost(row: any): Post {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    excerpt: row.excerpt,
+    contentHtml: row.content_html,
+    coverImage: row.cover_image || '/covers/velvet-index.svg',
+    status: row.status,
+    author: row.author,
+    tags: row.tags || [],
+    seoTitle: row.seo_title,
+    seoDescription: row.seo_description,
+    source: row.source,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
-export async function listPosts() {
-  const result = await query("SELECT * FROM generated_posts ORDER BY published_at DESC");
+export function makeSlug(title: string) {
+  return slugify(title, { lower: true, strict: true, trim: true }) || `post-${Date.now()}`;
+}
+
+export async function listPosts(includeDrafts = false): Promise<Post[]> {
+  const result = await query(
+    `SELECT * FROM generated_posts ${includeDrafts ? '' : "WHERE status = 'published'"} ORDER BY created_at DESC`,
+  );
   return result.rows.map(mapPost);
 }
 
-export async function getPostBySlug(slug: string) {
-  const result = await query("SELECT * FROM generated_posts WHERE slug=$1", [slug]);
+export async function getPost(slug: string, includeDrafts = false): Promise<Post | null> {
+  const result = await query(
+    `SELECT * FROM generated_posts WHERE slug = $1 ${includeDrafts ? '' : "AND status = 'published'"} LIMIT 1`,
+    [slug],
+  );
   return result.rows[0] ? mapPost(result.rows[0]) : null;
 }
 
-export async function createPost(input: Omit<Post, "id" | "publishedAt" | "updatedAt">) {
+export async function searchPosts(q: string): Promise<Post[]> {
+  const term = `%${q.trim()}%`;
   const result = await query(
-    `INSERT INTO generated_posts (title, slug, excerpt, tags, seo_title, seo_description, content_html)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [input.title, input.slug, input.excerpt, input.tags, input.seoTitle, input.seoDescription, input.contentHtml]
+    `SELECT * FROM generated_posts
+     WHERE status = 'published' AND (title ILIKE $1 OR excerpt ILIKE $1 OR content_html ILIKE $1)
+     ORDER BY created_at DESC LIMIT 30`,
+    [term],
   );
+  return result.rows.map(mapPost);
+}
+
+export async function upsertPost(input: PostInput, source: Post['source'] = 'admin', currentSlug?: string): Promise<Post> {
+  const slug = input.slug ? makeSlug(input.slug) : makeSlug(input.title);
+  const values = [
+    slug,
+    input.title.trim(),
+    input.excerpt.trim(),
+    sanitizeArticleHtml(input.contentHtml),
+    input.coverImage || '/covers/velvet-index.svg',
+    input.status || 'published',
+    input.author || 'Editorial team',
+    input.tags || [],
+    input.seoTitle || null,
+    input.seoDescription || null,
+    source,
+  ];
+  const result = await query(
+    `INSERT INTO generated_posts (slug, title, excerpt, content_html, cover_image, status, author, tags, seo_title, seo_description, source)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ON CONFLICT (slug) DO UPDATE SET
+       title = excluded.title,
+       excerpt = excluded.excerpt,
+       content_html = excluded.content_html,
+       cover_image = excluded.cover_image,
+       status = excluded.status,
+       author = excluded.author,
+       tags = excluded.tags,
+       seo_title = excluded.seo_title,
+       seo_description = excluded.seo_description,
+       source = excluded.source,
+       updated_at = now()
+     RETURNING *`,
+    values,
+  );
+
+  if (currentSlug && currentSlug !== slug) {
+    await query('DELETE FROM generated_posts WHERE slug = $1', [currentSlug]);
+  }
+
   return mapPost(result.rows[0]);
 }
 
-export async function updatePost(id: string, input: Omit<Post, "id" | "publishedAt" | "updatedAt">) {
-  const result = await query(
-    `UPDATE generated_posts SET title=$1, slug=$2, excerpt=$3, tags=$4, seo_title=$5, seo_description=$6,
-      content_html=$7, updated_at=now() WHERE id=$8 RETURNING *`,
-    [input.title, input.slug, input.excerpt, input.tags, input.seoTitle, input.seoDescription, input.contentHtml, id]
-  );
-  return result.rows[0] ? mapPost(result.rows[0]) : null;
-}
-
-export async function deletePost(id: string) {
-  await query("DELETE FROM generated_posts WHERE id=$1", [id]);
+export async function deletePost(slug: string) {
+  await query('DELETE FROM generated_posts WHERE slug = $1', [slug]);
 }

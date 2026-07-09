@@ -1,13 +1,16 @@
-import createDOMPurify from "dompurify";
-import { JSDOM } from "jsdom";
+import sanitizeHtml from 'sanitize-html';
 
-const window = new JSDOM("").window;
-const DOMPurify = createDOMPurify(window);
-
-export function sanitizeHtml(html: string) {
-  return DOMPurify.sanitize(html, {
-    USE_PROFILES: { html: true },
-    ALLOWED_TAGS: ["p", "br", "strong", "em", "ul", "ol", "li", "h2", "h3", "blockquote", "a"],
-    ALLOWED_ATTR: ["href", "target", "rel"]
+export function sanitizeArticleHtml(html: string): string {
+  return sanitizeHtml(html, {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat(['img', 'h1', 'h2', 'h3', 'figure', 'figcaption']),
+    allowedAttributes: {
+      a: ['href', 'name', 'target', 'rel'],
+      img: ['src', 'alt', 'title', 'width', 'height', 'loading'],
+      '*': ['class'],
+    },
+    allowedSchemes: ['http', 'https', 'mailto'],
+    transformTags: {
+      a: sanitizeHtml.simpleTransform('a', { rel: 'noopener noreferrer' }, true),
+    },
   });
 }

@@ -1,35 +1,53 @@
-import type { Request } from "express";
+export type Role = 'admin';
 
-export type UserRole = "superadmin";
-
-export type User = {
+export interface User {
   id: string;
   email: string;
   passwordHash: string;
-  role: UserRole;
-};
+  role: Role;
+  createdAt: string;
+}
 
-export type Post = {
-  id: string;
+export interface PostInput {
   title: string;
-  slug: string;
+  slug?: string;
   excerpt: string;
-  tags: string[];
-  seoTitle: string;
-  seoDescription: string;
   contentHtml: string;
-  publishedAt: string;
+  coverImage?: string;
+  status?: 'draft' | 'published';
+  author?: string;
+  tags?: string[];
+  seoTitle?: string;
+  seoDescription?: string;
+}
+
+export interface Post extends Required<Omit<PostInput, 'slug' | 'status' | 'author' | 'tags' | 'seoTitle' | 'seoDescription'>> {
+  id: string;
+  slug: string;
+  status: 'draft' | 'published';
+  author: string;
+  tags: string[];
+  coverImage: string;
+  seoTitle: string | null;
+  seoDescription: string | null;
+  source: 'admin' | 'ai' | 'legacy';
+  createdAt: string;
   updatedAt: string;
-};
+}
 
-export type AdminSettings = {
+export interface AdminSettings {
   masterPrompt: string;
-  generationEnabled: boolean;
-  generationFrequencyCount: number;
-  generationFrequencyPeriod: "day" | "week" | "month";
+  generationTime: string;
+  generationFrequency: 'daily' | 'weekly';
+  generationMode: 'daily' | 'weekly';
+  generationCount: number;
   generationTimes: string[];
-};
+  generationWeekdays: number[];
+  autoGenerationEnabled: boolean;
+}
 
-export type AuthRequest = Request & {
-  user?: { id: string; email: string; role: UserRole };
-};
+export interface AuthedRequestUser {
+  id: string;
+  email: string;
+  role: Role;
+}

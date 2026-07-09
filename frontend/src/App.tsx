@@ -1,37 +1,71 @@
-import { BookOpen, Clapperboard, Clock, Edit3, LogOut, PenLine, Plus, RefreshCcw, Save, Search, Sparkles, Trash2, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { api } from "./api";
-import type { AdminSettings, Post } from "./domain";
-import { coverForSlug, fallbackPosts } from "./domain";
+import { useEffect, useMemo, useState } from 'react';
+import {
+  BarChart3,
+  Clock,
+  FilePlus,
+  ImagePlus,
+  LogOut,
+  Menu,
+  RefreshCw,
+  Save,
+  Search,
+  Settings,
+  Sparkles,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { assetUrl, getPost, getPosts, request, subscribe } from './api';
+import { trackPageView } from './analytics';
+import type { AdminSettings, Article, Post } from './domain';
 
-const emptyPost = {
-  title: "",
-  slug: "",
-  excerpt: "",
-  tags: "",
-  seoTitle: "",
-  seoDescription: "",
-  contentHtml: ""
+const coverFallback = '/covers/velvet-index.svg';
+const weekdays = [
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
+  { value: 0, label: 'Sun' },
+];
+
+type DraftPost = {
+  title: string;
+  slug: string;
+  excerpt: string;
+  contentHtml: string;
+  coverImage: string;
+  status: 'draft' | 'published';
+  tags: string;
 };
 
-const postToDraft = (post: Post) => ({
-  title: post.title,
-  slug: post.slug,
-  excerpt: post.excerpt,
-  tags: post.tags.join(", "),
-  seoTitle: post.seoTitle,
-  seoDescription: post.seoDescription,
-  contentHtml: post.contentHtml
-});
+type MediaAsset = {
+  name: string;
+  url: string;
+  size: number;
+  createdAt: string;
+};
 
-const draftToPayload = (draft: typeof emptyPost) => ({
-  ...draft,
-  tags: draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean)
-});
+type Session = {
+  token: string;
+  csrfToken: string;
+  email: string;
+};
+
+const emptyDraft: DraftPost = {
+  title: '',
+  slug: '',
+  excerpt: '',
+  contentHtml: '<h2>The Contrarian Opening</h2><p></p>',
+  coverImage: coverFallback,
+  status: 'published',
+  tags: '',
+};
 
 function navigate(path: string) {
-  window.history.pushState({}, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  window.history.pushState({}, '', path);
+  window.dispatchEvent(new Event('app:navigate'));
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function SocialIcon({ name }: { name: "x" | "threads" | "telegram" | "linkedin" }) {
@@ -92,433 +126,656 @@ function ShareBar({ title, url }: { title: string; url: string }) {
 }
 
 
-function usePath() {
-  const [path, setPath] = useState(window.location.pathname);
-  useEffect(() => {
-    const update = () => setPath(window.location.pathname);
-    window.addEventListener("popstate", update);
-    return () => window.removeEventListener("popstate", update);
-  }, []);
-  return path;
+function readingTime(html: string) {
+  return Math.max(4, Math.ceil(html.replace(/<[^>]+>/g, '').split(/\s+/).filter(Boolean).length / 210));
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function toArticle(post: Post, index = 0): Article {
+  return {
+    ...post,
+    coverImage: post.coverImage?.startsWith('/uploads/') ? assetUrl(post.coverImage) : post.coverImage || coverFallback,
+    category: post.tags[0] || (post.source === 'ai' ? 'Market Intelligence' : 'Strategy'),
+    readingTime: readingTime(post.contentHtml),
+    views: 3200 + index * 370,
+  };
+}
+
+function clampGenerationCount(value: number) {
+  return Math.min(12, Math.max(1, Number.isFinite(value) ? value : 1));
+}
+
+function defaultTimeForIndex(index: number) {
+  const hour = (8 + index * 2) % 24;
+  return `${String(hour).padStart(2, '0')}:00`;
+}
+
+function normalizeGenerationTimes(times: string[], count: number) {
+  return Array.from({ length: count }, (_, index) => times[index] || defaultTimeForIndex(index));
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Could not read image.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function Header() {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  function go(path: string) {
+    setMenuOpen(false);
+    navigate(path);
+  }
+
   return (
-    <>
-      <header className="site-header">
-        <button className="brand" onClick={() => navigate("/")}>
+    <header className={`site-header ${menuOpen ? 'menu-open' : ''}`}>
+      <div className="shell header-inner">
+        <button className="brand" onClick={() => go('/')}>
           <span className="brand-mark">SW</span>
           <span>Soren Winslow Review</span>
         </button>
-        <nav>
-          <button onClick={() => navigate("/articles")}>Articles</button>
-          <button onClick={() => navigate("/about")}>About</button>
+        <button
+          className="menu-toggle"
+          type="button"
+          aria-label={menuOpen ? 'Close navigation' : 'Open navigation'}
+          aria-expanded={menuOpen}
+          aria-controls="site-navigation"
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          {menuOpen ? <X size={22} /> : <Menu size={22} />}
+        </button>
+        <nav id="site-navigation" className="nav">
+          <button onClick={() => go('/articles')}>Intelligence</button>
+          <button onClick={() => go('/about')}>About</button>
         </nav>
-      </header>
-      {children}
-      <footer className="footer">
-        <p>Culture reviewed as if attention were money and bad writing were a public health concern.</p>
-      </footer>
-    </>
+      </div>
+    </header>
   );
 }
 
-function PostCard({ post, featured = false }: { post: Post; featured?: boolean }) {
+function Newsletter() {
+  const [email, setEmail] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+    try {
+      await subscribe(email);
+      setEmail('');
+      setMessage('Subscribed. The next review note will find you.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not subscribe right now.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <article className={featured ? "post-card post-card-featured" : "post-card"} onClick={() => navigate(`/articles/${post.slug}`)}>
-      <img src={coverForSlug(post.slug)} alt="" />
-      <div>
-        <div className="tag-row">{post.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
-        <h3>{post.title}</h3>
-        <p>{post.excerpt}</p>
+    <form className="newsletter-form" onSubmit={submit}>
+      <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" placeholder="strategist@company.com" required disabled={busy} />
+      <button disabled={busy}>{busy ? 'Subscribing' : 'Subscribe'}</button>
+      {message && <p className={message.includes('Subscribed') ? 'success' : 'error'}>{message}</p>}
+    </form>
+  );
+}
+
+function ArticleCard({ article, featured = false }: { article: Article; featured?: boolean }) {
+  return (
+    <article
+      className={`article-card ${featured ? 'featured-card' : ''}`}
+      role="link"
+      tabIndex={0}
+      onClick={() => navigate(`/articles/${article.slug}`)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          navigate(`/articles/${article.slug}`);
+        }
+      }}
+    >
+      <img src={article.coverImage || coverFallback} alt="" />
+      <div className="card-copy">
+        <div className="eyebrow-row">
+          <span>{article.category}</span>
+          <span><Clock size={14} /> {article.readingTime} min</span>
+        </div>
+        <h3>{article.title}</h3>
+        <p>{article.excerpt}</p>
       </div>
     </article>
   );
 }
 
-function Home({ posts }: { posts: Post[] }) {
-  const featured = posts[0];
+function HomePage({ articles }: { articles: Article[] }) {
+  const lead = articles[0];
+  const rest = articles.slice(1, 7);
+
   return (
-    <Shell>
-      <main className="home">
-        <section className="hero">
+    <>
+      <section className="hero">
+        <div className="shell hero-grid">
           <div className="hero-copy">
-            <p className="kicker">The Michelin Guide for books and TV series</p>
+            <p className="overline">Soren Winslow / Literary Intelligence</p>
             <h1>Elegant reviews for people who suspect their watchlist is lying.</h1>
             <p>
-              Fiction, business books, classics, streaming shows, and the occasional cultural disaster served with a clean verdict.
+              Sharp, useful criticism for books, TV series, streaming culture, and business ideas that deserve a better verdict than the algorithm gives them.
             </p>
             <div className="hero-actions">
-              <button className="primary" onClick={() => navigate("/articles")}>
-                <Search size={18} /> Browse reviews
-              </button>
-              <button className="secondary" onClick={() => navigate("/about")}>
-                <BookOpen size={18} /> Meet the critic
-              </button>
+              <button className="btn primary" onClick={() => navigate('/articles')}>Browse Reviews</button>
+              <button className="btn ghost" onClick={() => navigate('/about')}>About Soren</button>
             </div>
           </div>
-          {featured && <PostCard post={featured} featured />}
-        </section>
-        <section className="section-head">
-          <h2>Latest Tastings</h2>
-          <p>Verdicts with teeth, warmth, and a useful receipt.</p>
-        </section>
-        <div className="post-grid">{posts.slice(0, 6).map((post) => <PostCard key={post.id} post={post} />)}</div>
-      </main>
-    </Shell>
-  );
-}
+          <aside className="signal-board">
+            <div>
+              <span className="board-label">Current Verdict</span>
+              <h2>Attention is expensive. Bad recommendations are worse.</h2>
+            </div>
+            <div className="signal-grid">
+              <span>Books</span>
+              <span>TV series</span>
+              <span>Streaming culture</span>
+              <span>Business classics</span>
+            </div>
+          </aside>
+        </div>
+      </section>
 
-function Articles({ posts }: { posts: Post[] }) {
-  return (
-    <Shell>
-      <main className="page">
-        <section className="page-title">
-          <Clapperboard />
+      <main className="shell section">
+        <div className="section-head">
           <div>
-            <h1>All Reviews</h1>
-            <p>Books, series, adaptations, and business advice inspected under civilized lighting.</p>
+            <p className="overline">Latest Reviews</p>
+            <h2>Verdicts with teeth, warmth, and a useful receipt.</h2>
           </div>
-        </section>
-        <div className="post-grid roomy">{posts.map((post) => <PostCard key={post.id} post={post} />)}</div>
+          <Newsletter />
+        </div>
+        {lead && <ArticleCard article={lead} featured />}
+        <div className="article-grid">
+          {rest.map((article) => <ArticleCard key={article.id} article={article} />)}
+        </div>
       </main>
-    </Shell>
+    </>
   );
 }
 
-function Article({ post }: { post?: Post }) {
-  if (!post) return <Shell><main className="page"><h1>Review not found</h1></main></Shell>;
-  return (
-    <Shell>
-      <main className="article">
-        <img className="article-cover" src={coverForSlug(post.slug)} alt="" />
-        <div className="tag-row">{post.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-        <h1>{post.title}</h1>
-        <p className="excerpt">{post.excerpt}</p>
-        <ShareBar title={post.title} url={`/articles/${post.slug}`} />
-        <div className="article-body" dangerouslySetInnerHTML={{ __html: post.contentHtml }} />
-      </main>
-    </Shell>
-  );
-}
-
-function About() {
-  return (
-    <Shell>
-      <main className="about">
-        <section>
-          <p className="kicker">About the author</p>
-          <h1>A critic with a linen napkin in one hand and a red pencil in the other.</h1>
-          <p>
-            Soren Winslow reviews books and TV series as if culture were a restaurant, attention were money, and bad writing
-            were a public health concern.
-          </p>
-        </section>
-        <aside>
-          <h2>Rating Menu</h2>
-          <p>3 Golden Pages: masterpiece.</p>
-          <p>2 Sharp Pencils: useful, original, valuable.</p>
-          <p>Literary Crime Scene: fascinating disaster.</p>
-        </aside>
-      </main>
-    </Shell>
-  );
-}
-
-function AdminPostForm({ tokenReady, onSaved }: { tokenReady: boolean; onSaved: () => void }) {
-  const [draft, setDraft] = useState(emptyPost);
-  const update = (key: keyof typeof emptyPost, value: string) => setDraft((current) => ({ ...current, [key]: value }));
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    await api.createPost(draftToPayload(draft));
-    setDraft(emptyPost);
-    onSaved();
-  }
-  return (
-    <form className="admin-form" onSubmit={submit}>
-      <h2><Plus size={18} /> New review</h2>
-      {(["title", "slug", "excerpt", "tags", "seoTitle", "seoDescription"] as const).map((key) => (
-        <input key={key} value={draft[key]} onChange={(event) => update(key, event.target.value)} placeholder={key} required />
-      ))}
-      <textarea value={draft.contentHtml} onChange={(event) => update("contentHtml", event.target.value)} placeholder="contentHtml" required />
-      <button className="primary" disabled={!tokenReady}><Save size={18} /> Publish</button>
-    </form>
-  );
-}
-
-function AdminEditPostForm({
-  post,
-  onCancel,
-  onSaved
-}: {
-  post: Post;
-  onCancel: () => void;
-  onSaved: () => void;
-}) {
-  const [draft, setDraft] = useState(() => postToDraft(post));
-  useEffect(() => {
-    setDraft(postToDraft(post));
-  }, [post]);
-
-  const update = (key: keyof typeof emptyPost, value: string) => setDraft((current) => ({ ...current, [key]: value }));
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    await api.updatePost(post.id, draftToPayload(draft));
-    onSaved();
-  }
+function ArticlesPage({ articles }: { articles: Article[] }) {
+  const [query, setQuery] = useState('');
+  const filtered = useMemo(() => {
+    const term = query.toLowerCase().trim();
+    if (!term) return articles;
+    return articles.filter((article) => [article.title, article.excerpt, article.category, ...article.tags].join(' ').toLowerCase().includes(term));
+  }, [articles, query]);
 
   return (
-    <form className="admin-form edit-form" onSubmit={submit}>
-      <div className="form-head">
-        <h2><Edit3 size={18} /> Edit review</h2>
-        <button className="icon-button" type="button" title="Close editor" onClick={onCancel}><X size={18} /></button>
-      </div>
-      {(["title", "slug", "excerpt", "tags", "seoTitle", "seoDescription"] as const).map((key) => (
-        <label key={key}>
-          <span className="field-label">{key}</span>
-          <input value={draft[key]} onChange={(event) => update(key, event.target.value)} required />
+    <main className="shell archive-page">
+      <section className="page-intro">
+        <p className="overline">Archive</p>
+        <h1>Reviews, verdicts, essays, and cultural notes.</h1>
+        <label className="search-field">
+          <Search size={18} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search books, shows, authors, themes..." />
         </label>
-      ))}
-      <label>
-        <span className="field-label">contentHtml</span>
-        <textarea value={draft.contentHtml} onChange={(event) => update("contentHtml", event.target.value)} required />
-      </label>
-      <button className="primary"><Save size={18} /> Save article changes</button>
-    </form>
-  );
-}
-
-function Admin() {
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [login, setLogin] = useState({ email: "", password: "" });
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [settings, setSettings] = useState<AdminSettings | null>(null);
-  const [message, setMessage] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [editingPost, setEditingPost] = useState<Post | null>(null);
-
-  async function loadAdmin() {
-    const [adminPosts, adminSettings] = await Promise.all([api.adminPosts(), api.getSettings()]);
-    setPosts(adminPosts);
-    setSettings(adminSettings);
-    if (editingPost) {
-      setEditingPost(adminPosts.find((post) => post.id === editingPost.id) ?? null);
-    }
-  }
-
-  async function submitLogin(event: FormEvent) {
-    event.preventDefault();
-    await api.login(login.email, login.password);
-    setLoggedIn(true);
-    await loadAdmin();
-  }
-
-  async function generateNow() {
-    setIsGenerating(true);
-    setMessage("Generating a new review...");
-    try {
-      const post = await api.generateNow();
-      await loadAdmin();
-      setMessage(`Generated: ${post.title}`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Generation failed");
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-
-  async function saveSettings() {
-    if (!settings) return;
-    const nextSettings = await api.updateSettings(settings);
-    setSettings(nextSettings);
-    setMessage("Generation settings saved");
-  }
-
-  function syncGenerationTimes(count: number, currentTimes: string[]) {
-    const safeCount = Math.max(1, Math.floor(count || 1));
-    const times = [...currentTimes];
-    while (times.length < safeCount) times.push(times[times.length - 1] ?? "09:00");
-    return times.slice(0, safeCount);
-  }
-
-  const generationSummary = settings
-    ? `Create ${settings.generationFrequencyCount} article${settings.generationFrequencyCount === 1 ? "" : "s"} per ${settings.generationFrequencyPeriod} at ${settings.generationTimes.join(", ")}.`
-    : "";
-
-  if (!loggedIn) {
-    return (
-      <main className="admin-login">
-        <form onSubmit={submitLogin}>
-          <span className="brand-mark">SW</span>
-          <h1>Editor Desk</h1>
-          <input value={login.email} onChange={(event) => setLogin({ ...login, email: event.target.value })} placeholder="email" />
-          <input type="password" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} placeholder="password" />
-          <button className="primary">Login</button>
-        </form>
-      </main>
-    );
-  }
-
-  return (
-    <main className="admin">
-      <header>
-        <h1>Editor Desk</h1>
-        <button className="secondary" onClick={() => api.logout().then(() => setLoggedIn(false))}><LogOut size={18} /> Logout</button>
-      </header>
-      <div className="admin-layout">
-        {editingPost ? (
-          <AdminEditPostForm
-            post={editingPost}
-            onCancel={() => setEditingPost(null)}
-            onSaved={async () => {
-              await loadAdmin();
-              setEditingPost(null);
-              setMessage("Article changes saved");
-            }}
-          />
-        ) : (
-          <AdminPostForm tokenReady={loggedIn} onSaved={loadAdmin} />
-        )}
-        <section className="admin-panel">
-          <h2><PenLine size={18} /> Published reviews</h2>
-          {posts.map((post) => (
-            <div className="admin-row" key={post.id}>
-              <span>{post.title}</span>
-              <div className="row-actions">
-                <button title="Edit" onClick={() => setEditingPost(post)}><Edit3 size={17} /></button>
-                <button
-                  title="Delete"
-                  onClick={() =>
-                    api.deletePost(post.id).then(async () => {
-                      if (editingPost?.id === post.id) setEditingPost(null);
-                      await loadAdmin();
-                    })
-                  }
-                >
-                  <Trash2 size={17} />
-                </button>
-              </div>
-            </div>
-          ))}
-        </section>
-        {settings && (
-          <section className="admin-panel wide generation-panel">
-            <div className="generation-hero">
-              <div>
-                <p className="admin-kicker">OpenRouter writer</p>
-                <h2><Sparkles size={20} /> AI article generation</h2>
-                <p>Generate one full review immediately, or schedule recurring articles by period and time.</p>
-              </div>
-              <button className="generate-button" onClick={generateNow} disabled={isGenerating}>
-                <Sparkles size={20} />
-                {isGenerating ? "Generating..." : "Generate article now"}
-              </button>
-            </div>
-
-            <div className="generation-grid">
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  checked={settings.generationEnabled}
-                  onChange={(event) => setSettings({ ...settings, generationEnabled: event.target.checked })}
-                />
-                <span>
-                  <strong>Automatic generation</strong>
-                  <small>{settings.generationEnabled ? generationSummary : "Disabled: only manual generation runs."}</small>
-                </span>
-              </label>
-
-              <label>
-                <span className="field-label"><RefreshCcw size={16} /> How many times</span>
-                <input
-                  min="1"
-                  type="number"
-                  value={settings.generationFrequencyCount}
-                  onChange={(event) => {
-                    const generationFrequencyCount = Math.max(1, Number(event.target.value));
-                    setSettings({
-                      ...settings,
-                      generationFrequencyCount,
-                      generationTimes: syncGenerationTimes(generationFrequencyCount, settings.generationTimes)
-                    });
-                  }}
-                />
-              </label>
-
-              <label>
-                <span className="field-label"><RefreshCcw size={16} /> Period</span>
-                <select
-                  value={settings.generationFrequencyPeriod}
-                  onChange={(event) =>
-                    setSettings({
-                      ...settings,
-                      generationFrequencyPeriod: event.target.value as AdminSettings["generationFrequencyPeriod"]
-                    })
-                  }
-                >
-                  <option value="day">per day</option>
-                  <option value="week">per week</option>
-                  <option value="month">per month</option>
-                </select>
-              </label>
-
-            </div>
-
-            <div className="generation-times">
-              <div>
-                <span className="field-label"><Clock size={16} /> Time for each generation</span>
-                <p>Each scheduled generation gets its own time.</p>
-              </div>
-              <div className="time-grid">
-                {settings.generationTimes.map((time, index) => (
-                  <label key={`${index}-${settings.generationFrequencyCount}`}>
-                    <span className="field-label">Generation {index + 1}</span>
-                    <input
-                      type="time"
-                      value={time}
-                      onChange={(event) => {
-                        const generationTimes = [...settings.generationTimes];
-                        generationTimes[index] = event.target.value;
-                        setSettings({ ...settings, generationTimes });
-                      }}
-                    />
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <p className="schedule-preview">{generationSummary}</p>
-
-            <label className="prompt-editor">
-              <span className="field-label"><PenLine size={16} /> Master prompt</span>
-              <textarea
-                value={settings.masterPrompt}
-                onChange={(event) => setSettings({ ...settings, masterPrompt: event.target.value })}
-              />
-            </label>
-
-            <div className="admin-actions">
-              <button className="primary" onClick={saveSettings}><Save size={18} /> Save generation settings</button>
-            </div>
-            {message && <p className="message">{message}</p>}
-          </section>
-        )}
+      </section>
+      <div className="article-grid">
+        {filtered.map((article) => <ArticleCard key={article.id} article={article} />)}
       </div>
     </main>
   );
 }
 
-export function App() {
-  const path = usePath();
+function ArticlePage({ article }: { article?: Article }) {
+  if (!article) {
+    return (
+      <main className="shell page-intro">
+        <h1>Article not found.</h1>
+        <button className="btn primary" onClick={() => navigate('/articles')}>Back to archive</button>
+      </main>
+    );
+  }
+
+  return (
+    <main className="article-detail">
+      <section className="shell article-masthead">
+        <p className="overline">{article.category}</p>
+        <h1>{article.title}</h1>
+        <p>{article.excerpt}</p>
+        <div className="article-meta">
+          <span>Soren Winslow</span>
+          <span>{article.readingTime} min read</span>
+          <span>{new Date(article.createdAt).toLocaleDateString()}</span>
+        </div>
+      </section>
+      <img className="detail-cover" src={article.coverImage || coverFallback} alt="" />
+      <div className="shell prose share-shell">
+        <ShareBar title={article.title} url={`/articles/${article.slug}`} />
+      </div>
+      <article className="shell prose" dangerouslySetInnerHTML={{ __html: article.contentHtml }} />
+    </main>
+  );
+}
+
+function AboutPage() {
+  return (
+    <main className="shell about-page">
+      <section className="page-intro">
+        <p className="overline">About</p>
+        <h1>Soren Winslow reviews culture as if attention were money and bad writing were a public health concern.</h1>
+      </section>
+      <div className="about-grid">
+        <div className="about-panel">
+          <h2>Soren Winslow</h2>
+          <p>
+            A premium review publication for readers who want sharper judgment on books, TV series, streaming culture, and business ideas.
+          </p>
+        </div>
+        <div className="about-panel quiet">
+          <h2>Editorial Bias</h2>
+          <p>
+            We prefer specific criticism over vague taste, memorable verdicts over star ratings, and useful disagreement over polite content that evaporates five minutes after reading.
+          </p>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function LoginPanel({ onLogin }: { onLogin: (session: Session) => void }) {
+  const [email, setEmail] = useState('admin@sorenwinslow.local');
+  const [password, setPassword] = useState('MySecretPassword123!');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const data = await request<{ user: { email: string }; accessToken: string; csrfToken: string }>('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      });
+      onLogin({ token: data.accessToken, csrfToken: data.csrfToken, email: data.user.email });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="admin-login" onSubmit={submit}>
+      <p className="overline">Control Room</p>
+      <h1>Editorial control room</h1>
+      <label><span>Email</span><input value={email} onChange={(event) => setEmail(event.target.value)} type="email" /></label>
+      <label><span>Password</span><input value={password} onChange={(event) => setPassword(event.target.value)} type="password" /></label>
+      {error && <p className="error">{error}</p>}
+      <button className="btn primary" disabled={busy}>{busy ? 'Signing in' : 'Sign in'}</button>
+    </form>
+  );
+}
+
+function AdminPanel({ session, onLogout }: { session: Session; onLogout: () => void }) {
   const [posts, setPosts] = useState<Post[]>([]);
+  const [coverImages, setCoverImages] = useState<MediaAsset[]>([]);
+  const [settings, setSettings] = useState<AdminSettings | null>(null);
+  const [draft, setDraft] = useState<DraftPost>(emptyDraft);
+  const [editingSlug, setEditingSlug] = useState<string | null>(null);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function loadAdminData() {
+    const [adminPosts, adminSettings, mediaAssets] = await Promise.all([
+      request<Post[]>('/api/admin/posts', {}, session.token, session.csrfToken),
+      request<AdminSettings>('/api/admin/settings', {}, session.token, session.csrfToken),
+      request<MediaAsset[]>('/api/admin/media/covers', {}, session.token, session.csrfToken),
+    ]);
+    setPosts(adminPosts);
+    setSettings(adminSettings);
+    setCoverImages(mediaAssets);
+  }
+
   useEffect(() => {
-    api.getPosts().then(setPosts).catch(() => setPosts(fallbackPosts));
+    loadAdminData().catch((error) => setMessage(error instanceof Error ? error.message : 'Could not load admin data'));
   }, []);
-  const articleSlug = useMemo(() => path.match(/^\/articles\/(.+)/)?.[1], [path]);
-  if (path === "/admin") return <Admin />;
-  if (articleSlug) return <Article post={posts.find((post) => post.slug === articleSlug)} />;
-  if (path === "/articles") return <Articles posts={posts} />;
-  if (path === "/about") return <About />;
-  return <Home posts={posts} />;
+
+  function handleAdminError(error: unknown, fallback: string) {
+    const text = error instanceof Error ? error.message : fallback;
+    if (text.toLowerCase().includes('csrf')) {
+      setMessage('Session changed. Please sign in again.');
+      window.setTimeout(onLogout, 900);
+      return;
+    }
+    setMessage(text);
+  }
+
+  function edit(post: Post) {
+    setEditingSlug(post.slug);
+    setDraft({
+      title: post.title,
+      slug: post.slug,
+      excerpt: post.excerpt,
+      contentHtml: post.contentHtml,
+      coverImage: post.coverImage || coverFallback,
+      status: post.status,
+      tags: post.tags.join(', '),
+    });
+  }
+
+  async function savePost(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+    const payload = { ...draft, tags: draft.tags.split(',').map((tag) => tag.trim()).filter(Boolean) };
+    try {
+      await request<Post>(editingSlug ? `/api/admin/posts/${editingSlug}` : '/api/admin/posts', {
+        method: editingSlug ? 'PUT' : 'POST',
+        body: JSON.stringify(payload),
+      }, session.token, session.csrfToken);
+      setDraft(emptyDraft);
+      setEditingSlug(null);
+      await loadAdminData();
+      setMessage('Article saved.');
+    } catch (error) {
+      handleAdminError(error, 'Could not save article');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteArticle(slug: string) {
+    setBusy(true);
+    try {
+      await request(`/api/admin/posts/${slug}`, { method: 'DELETE' }, session.token, session.csrfToken);
+      await loadAdminData();
+      setMessage('Article deleted.');
+    } catch (error) {
+      handleAdminError(error, 'Could not delete article');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveSettings() {
+    if (!settings) return;
+    setBusy(true);
+    try {
+      const updated = await request<AdminSettings>('/api/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify(settings),
+      }, session.token, session.csrfToken);
+      setSettings(updated);
+      setMessage('Generation settings saved.');
+    } catch (error) {
+      handleAdminError(error, 'Could not save settings');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadCoverImage(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setBusy(true);
+    setMessage('');
+    try {
+      const asset = await request<MediaAsset>('/api/admin/media/covers', {
+        method: 'POST',
+        body: JSON.stringify({ fileName: file.name, dataUrl: await readFileAsDataUrl(file) }),
+      }, session.token, session.csrfToken);
+      setCoverImages((current) => [asset, ...current]);
+      setDraft((current) => ({ ...current, coverImage: asset.url }));
+      setMessage('Cover image uploaded.');
+    } catch (error) {
+      handleAdminError(error, 'Could not upload cover image');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteCoverImage(asset: MediaAsset) {
+    setBusy(true);
+    setMessage('');
+    try {
+      await request(`/api/admin/media/covers/${encodeURIComponent(asset.name)}`, {
+        method: 'DELETE',
+      }, session.token, session.csrfToken);
+      setCoverImages((current) => current.filter((item) => item.name !== asset.name));
+      if (draft.coverImage === asset.url) setDraft((current) => ({ ...current, coverImage: coverFallback }));
+      setMessage('Cover image deleted.');
+    } catch (error) {
+      handleAdminError(error, 'Could not delete cover image');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function updateGenerationCount(value: number) {
+    if (!settings) return;
+    const generationCount = clampGenerationCount(value);
+    const generationTimes = normalizeGenerationTimes(settings.generationTimes, generationCount);
+    setSettings({
+      ...settings,
+      generationCount,
+      generationTimes,
+      generationTime: generationTimes[0],
+    });
+  }
+
+  function updateGenerationTime(index: number, time: string) {
+    if (!settings) return;
+    const generationTimes = normalizeGenerationTimes(settings.generationTimes, settings.generationCount);
+    generationTimes[index] = time;
+    setSettings({
+      ...settings,
+      generationTimes,
+      generationTime: generationTimes[0],
+    });
+  }
+
+  async function generateNow(count = 1) {
+    setBusy(true);
+    setMessage('');
+    try {
+      await request<Post[]>('/api/ai/generate-article', {
+        method: 'POST',
+        body: JSON.stringify({ count }),
+      }, session.token, session.csrfToken);
+      await loadAdminData();
+      setMessage(count === 1 ? 'One article generated.' : `${count} articles generated.`);
+    } catch (error) {
+      handleAdminError(error, 'Generation failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function logout() {
+    await request('/api/auth/logout', { method: 'POST' }, session.token, session.csrfToken).catch(() => null);
+    onLogout();
+  }
+
+  return (
+    <main className="admin-shell">
+      <section className="admin-top">
+        <div>
+          <p className="overline">Signed in as {session.email}</p>
+          <h1>Soren Winslow admin</h1>
+        </div>
+        <button className="icon-btn" onClick={logout} title="Logout"><LogOut size={18} /></button>
+      </section>
+      {message && <p className={message.includes('saved') || message.includes('generated') || message.includes('deleted') ? 'success notice' : 'error notice'}>{message}</p>}
+      <div className="admin-grid">
+        <section className="admin-panel">
+          <h2><FilePlus size={20} /> {editingSlug ? 'Edit article' : 'Create article'}</h2>
+          <form className="editor-form" onSubmit={savePost}>
+            <label><span>Title</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} required /></label>
+            <label><span>Slug</span><input value={draft.slug} onChange={(event) => setDraft({ ...draft, slug: event.target.value })} /></label>
+            <label><span>Excerpt</span><textarea value={draft.excerpt} onChange={(event) => setDraft({ ...draft, excerpt: event.target.value })} required /></label>
+            <label>
+              <span>Cover image</span>
+              <select value={draft.coverImage} onChange={(event) => setDraft({ ...draft, coverImage: event.target.value })}>
+                <option value={coverFallback}>Default velvet index</option>
+                <option value="/covers/neon-bookmark.svg">Neon bookmark</option>
+                <option value="/covers/cinema-margin.svg">Cinema margin</option>
+                {coverImages.map((asset) => <option key={asset.name} value={asset.url}>{asset.name}</option>)}
+              </select>
+            </label>
+            <label><span>Tags</span><input value={draft.tags} onChange={(event) => setDraft({ ...draft, tags: event.target.value })} placeholder="Books, TV, Reviews" /></label>
+            <label><span>Status</span><select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as DraftPost['status'] })}><option value="published">Published</option><option value="draft">Draft</option></select></label>
+            <label><span>HTML content</span><textarea className="html-editor" value={draft.contentHtml} onChange={(event) => setDraft({ ...draft, contentHtml: event.target.value })} required /></label>
+            <div className="button-row">
+              <button className="btn primary" disabled={busy}><Save size={16} /> Save</button>
+              <button type="button" className="btn ghost" onClick={() => { setDraft(emptyDraft); setEditingSlug(null); }}>New</button>
+            </div>
+          </form>
+        </section>
+
+        <section className="admin-panel">
+          <h2><Settings size={20} /> AI generation</h2>
+          {settings && (
+            <div className="settings-form">
+              <label className="toggle"><input type="checkbox" checked={settings.autoGenerationEnabled} onChange={(event) => setSettings({ ...settings, autoGenerationEnabled: event.target.checked })} /> Auto generation enabled</label>
+              <label><span>Mode</span><select value={settings.generationMode} onChange={(event) => setSettings({ ...settings, generationMode: event.target.value as AdminSettings['generationMode'], generationFrequency: event.target.value as AdminSettings['generationFrequency'] })}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
+              <label><span>Generations per day</span><input type="number" min="1" max="12" value={settings.generationCount} onChange={(event) => updateGenerationCount(Number(event.target.value))} /></label>
+              <div className="time-list">
+                <span>Generation times</span>
+                {normalizeGenerationTimes(settings.generationTimes, settings.generationCount).map((time, index) => (
+                  <label key={index} className="time-row">
+                    <span>#{index + 1}</span>
+                    <input type="time" value={time} onChange={(event) => updateGenerationTime(index, event.target.value)} />
+                  </label>
+                ))}
+              </div>
+              <div className="weekday-row">
+                {weekdays.map((day) => (
+                  <button key={day.value} type="button" className={settings.generationWeekdays.includes(day.value) ? 'active' : ''} onClick={() => {
+                    const exists = settings.generationWeekdays.includes(day.value);
+                    setSettings({ ...settings, generationWeekdays: exists ? settings.generationWeekdays.filter((value) => value !== day.value) : [...settings.generationWeekdays, day.value] });
+                  }}>{day.label}</button>
+                ))}
+              </div>
+              <label><span>Master prompt</span><textarea className="prompt-editor" value={settings.masterPrompt} onChange={(event) => setSettings({ ...settings, masterPrompt: event.target.value })} /></label>
+              <div className="button-row">
+                <button type="button" className="btn primary" disabled={busy} onClick={saveSettings}><Save size={16} /> Save settings</button>
+                <button type="button" className="btn ghost" disabled={busy} onClick={() => generateNow(1)}><Sparkles size={16} /> {busy ? 'Generating...' : 'Generate 1 now'}</button>
+                {settings.generationCount > 1 && (
+                  <button type="button" className="btn ghost" disabled={busy} onClick={() => generateNow(settings.generationCount)}><RefreshCw size={16} /> {busy ? 'Generating...' : `Generate ${settings.generationCount} now`}</button>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+
+      <section className="admin-panel media-panel">
+        <div className="media-panel-head">
+          <div>
+            <h2><ImagePlus size={20} /> Cover images</h2>
+            <p>Uploaded images are used as random covers for newly generated review articles.</p>
+          </div>
+          <label className="btn primary upload-btn">
+            Upload image
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={uploadCoverImage} disabled={busy} />
+          </label>
+        </div>
+        <div className="media-grid">
+          {coverImages.map((asset) => (
+            <article key={asset.name} className="media-card">
+              <img src={assetUrl(asset.url)} alt="" />
+              <div>
+                <strong>{asset.name}</strong>
+                <small>{Math.round(asset.size / 1024)} KB</small>
+              </div>
+              <button type="button" className="btn ghost" onClick={() => setDraft({ ...draft, coverImage: asset.url })}>Use in editor</button>
+              <button type="button" className="icon-btn danger" onClick={() => deleteCoverImage(asset)} title="Delete"><Trash2 size={17} /></button>
+            </article>
+          ))}
+          {!coverImages.length && <p className="empty-note">No uploaded cover images yet.</p>}
+        </div>
+      </section>
+
+      <section className="admin-panel post-list-panel">
+        <h2><BarChart3 size={20} /> Articles</h2>
+        <div className="admin-post-list">
+          {posts.map((post) => (
+            <article key={post.id}>
+              <div>
+                <strong>{post.title}</strong>
+                <span>{post.status} / {post.source} / {post.slug}</span>
+              </div>
+              <button className="btn ghost" onClick={() => edit(post)}>Edit</button>
+              <button className="icon-btn danger" onClick={() => deleteArticle(post.slug)} title="Delete"><Trash2 size={17} /></button>
+            </article>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function AdminPage() {
+  const [session, setSession] = useState<Session | null>(null);
+  return session ? <AdminPanel session={session} onLogout={() => setSession(null)} /> : <main className="shell admin-page"><LoginPanel onLogin={setSession} /></main>;
+}
+
+export default function App() {
+  const [path, setPath] = useState(window.location.pathname);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [selected, setSelected] = useState<Post | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const update = () => setPath(window.location.pathname);
+    window.addEventListener('popstate', update);
+    window.addEventListener('app:navigate', update);
+    return () => {
+      window.removeEventListener('popstate', update);
+      window.removeEventListener('app:navigate', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    getPosts().then(setPosts).catch((err) => setError(err instanceof Error ? err.message : 'Could not load articles'));
+  }, []);
+
+  useEffect(() => {
+    const match = path.match(/^\/articles\/([^/]+)$/);
+    if (!match) {
+      setSelected(null);
+      return;
+    }
+    getPost(match[1]).then(setSelected).catch(() => setSelected(null));
+  }, [path]);
+
+  useEffect(() => {
+    trackPageView(path);
+  }, [path]);
+
+  const articles = useMemo(() => posts.map(toArticle), [posts]);
+  const selectedArticle = selected ? toArticle(selected) : articles.find((article) => path === `/articles/${article.slug}`);
+
+  return (
+    <>
+      <Header />
+      {error && <div className="shell error notice">{error}</div>}
+      {path === '/' && <HomePage articles={articles} />}
+      {path === '/articles' && <ArticlesPage articles={articles} />}
+      {path.startsWith('/articles/') && <ArticlePage article={selectedArticle} />}
+      {path === '/about' && <AboutPage />}
+      {path === '/admin' && <AdminPage />}
+      <footer className="site-footer">
+        <div className="shell">
+          <span>Soren Winslow Review</span>
+          <span>Literary intelligence by Soren Winslow</span>
+        </div>
+      </footer>
+    </>
+  );
 }

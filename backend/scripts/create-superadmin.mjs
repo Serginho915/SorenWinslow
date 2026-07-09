@@ -1,33 +1,34 @@
-import bcrypt from "bcrypt";
-import pg from "pg";
+import { Pool } from 'pg';
+import bcrypt from 'bcryptjs';
 
-const { Pool } = pg;
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const email = process.env.LOCAL_SUPERADMIN_EMAIL || process.env.SUPERADMIN_EMAIL || 'admin@sorenwinslow.local';
+const password = process.env.LOCAL_SUPERADMIN_PASSWORD || process.env.SUPERADMIN_PASSWORD || 'MySecretPassword123!';
+const databaseUrl = process.env.DATABASE_URL;
 
-const email = process.env.ADMIN_EMAIL;
-const password = process.env.ADMIN_PASSWORD;
-if (!email || !password) {
-  console.error("ADMIN_EMAIL and ADMIN_PASSWORD are required");
+if (!databaseUrl) {
+  console.error('DATABASE_URL is required');
   process.exit(1);
 }
 
-await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
+const pool = new Pool({ connectionString: databaseUrl });
+await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
 await pool.query(`
   CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'superadmin',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    email text UNIQUE NOT NULL,
+    password_hash text NOT NULL,
+    role text NOT NULL DEFAULT 'admin',
+    created_at timestamptz NOT NULL DEFAULT now()
   )
 `);
 
 const passwordHash = await bcrypt.hash(password, 12);
 await pool.query(
-  `INSERT INTO users (email, password_hash, role) VALUES ($1,$2,'superadmin')
-   ON CONFLICT (email) DO UPDATE SET password_hash=$2`,
-  [email.toLowerCase(), passwordHash]
+  `INSERT INTO users (email, password_hash, role)
+   VALUES ($1, $2, 'admin')
+   ON CONFLICT (email) DO UPDATE SET password_hash = excluded.password_hash`,
+  [email, passwordHash],
 );
+await pool.end();
 
 console.log(`Superadmin ready: ${email}`);
-await pool.end();
