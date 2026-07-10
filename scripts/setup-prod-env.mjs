@@ -9,6 +9,8 @@ if (fs.existsSync(file)) {
   const content = `POSTGRES_DB=sorenwinslow
 POSTGRES_USER=sorenwinslow
 POSTGRES_PASSWORD=${secret()}
+LOCAL_SUPERADMIN_EMAIL=admin@sorenwinslow.com
+LOCAL_SUPERADMIN_PASSWORD=${secret()}
 VITE_API_URL=https://api.sorenwinslow.com
 VITE_GA_MEASUREMENT_ID=
 `;
