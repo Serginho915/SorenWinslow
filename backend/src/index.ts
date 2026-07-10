@@ -18,6 +18,7 @@ const app = express();
 const port = Number(process.env.PORT || 4000);
 const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
 
+app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(
   cors({
