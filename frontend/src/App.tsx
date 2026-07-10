@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   BarChart3,
   Clock,
@@ -255,34 +255,30 @@ function ArticleCard({ article, featured = false }: { article: Article; featured
 function HomePage({ articles }: { articles: Article[] }) {
   const lead = articles[0];
   const rest = articles.slice(1, 7);
+  const heroStyle = lead ? { '--hero-image': `url("${lead.coverImage}")` } as CSSProperties : undefined;
 
   return (
     <>
-      <section className="hero">
+      <section className="hero" style={heroStyle}>
         <div className="shell hero-grid">
           <div className="hero-copy">
-            <p className="overline">Soren Winslow / Literary Intelligence</p>
-            <h1>Elegant reviews for people who suspect their watchlist is lying.</h1>
+            <p className="overline">Soren Winslow Review</p>
+            <h1>Reviews with taste, tension, and a reason to keep reading.</h1>
             <p>
-              Sharp, useful criticism for books, TV series, streaming culture, and business ideas that deserve a better verdict than the algorithm gives them.
+              Independent criticism for books, streaming culture, business ideas, and the stories people keep recommending without quite knowing why.
             </p>
             <div className="hero-actions">
-              <button className="btn primary" onClick={() => navigate('/articles')}>Browse Reviews</button>
-              <button className="btn ghost" onClick={() => navigate('/about')}>About Soren</button>
+              <button className="btn primary" onClick={() => lead ? navigate(`/articles/${lead.slug}`) : navigate('/articles')}>Read the Lead Review</button>
+              <button className="btn ghost" onClick={() => navigate('/articles')}>Browse Archive</button>
             </div>
           </div>
-          <aside className="signal-board">
-            <div>
-              <span className="board-label">Current Verdict</span>
-              <h2>Attention is expensive. Bad recommendations are worse.</h2>
-            </div>
-            <div className="signal-grid">
-              <span>Books</span>
-              <span>TV series</span>
-              <span>Streaming culture</span>
-              <span>Business classics</span>
-            </div>
-          </aside>
+          {lead && (
+            <button className="hero-brief" type="button" onClick={() => navigate(`/articles/${lead.slug}`)}>
+              <span>Latest Verdict</span>
+              <strong>{lead.title}</strong>
+              <small>{lead.category} / {lead.readingTime} min read</small>
+            </button>
+          )}
         </div>
       </section>
 
@@ -290,7 +286,7 @@ function HomePage({ articles }: { articles: Article[] }) {
         <div className="section-head">
           <div>
             <p className="overline">Latest Reviews</p>
-            <h2>Verdicts with teeth, warmth, and a useful receipt.</h2>
+            <h2>Recent notes from the review desk.</h2>
           </div>
           <Newsletter />
         </div>
@@ -315,7 +311,8 @@ function ArticlesPage({ articles }: { articles: Article[] }) {
     <main className="shell archive-page">
       <section className="page-intro">
         <p className="overline">Archive</p>
-        <h1>Reviews, verdicts, essays, and cultural notes.</h1>
+        <h1>A sharper index of what deserves your attention.</h1>
+        <p>Search the full review archive by title, theme, format, or category.</p>
         <label className="search-field">
           <Search size={18} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search books, shows, authors, themes..." />
@@ -364,13 +361,14 @@ function AboutPage() {
     <main className="shell about-page">
       <section className="page-intro">
         <p className="overline">About</p>
-        <h1>Soren Winslow reviews culture as if attention were money and bad writing were a public health concern.</h1>
+        <h1>A review room for readers who want judgment, not noise.</h1>
+        <p>Soren Winslow Review treats attention like capital: limited, valuable, and worth defending from lazy recommendations.</p>
       </section>
       <div className="about-grid">
         <div className="about-panel">
           <h2>Soren Winslow</h2>
           <p>
-            A premium review publication for readers who want sharper judgment on books, TV series, streaming culture, and business ideas.
+            A premium review publication for people who want sharper judgment on books, TV series, streaming culture, and business ideas.
           </p>
         </div>
         <div className="about-panel quiet">
